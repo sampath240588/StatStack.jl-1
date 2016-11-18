@@ -1,6 +1,6 @@
 addprocs(3)
-using DataStructures, DataArrays , DataFrames, StatsFuns, GLM , Distributions, MixedModels, StatsBase, StatLib, JSON, NamedArrays
-@everywhere using DataStructures, DataArrays , DataFrames, StatsFuns, GLM , Distributions, MixedModels, StatsBase, StatLib, JSON, NamedArrays
+using DataStructures, DataArrays , DataFrames, StatsFuns, GLM , Distributions, MixedModels, StatsBase, StatLib, JSON
+@everywhere using DataStructures, DataArrays , DataFrames, StatsFuns, GLM , Distributions, MixedModels, StatsBase, StatLib, JSON
 
  
 const cfgDefaults=OrderedDict( :P2_Competitor => true
@@ -378,30 +378,71 @@ end
 genExcludeVars!(iocc,idolocc,ipen)
 
 
-#function expandM(di::Dict)
-#    d2=deepcopy(di)
-#    if d2[:modelName]==:occ  
-#        d2[:dist] = Poisson()
-#        d2[:lnk] = LogLink()
-#        d2[:Buyer_Pos_P1_is1] = true
-#    end
-#    if d2[:modelName]==:dolocc  
-#        d2[:dist] = Gamma()
-#        d2[:lnk] = LogLink()
-#        d2[:Buyer_Pos_P1_is1] = true
-#    end
-#    if d2[:modelName]==:pen
-#        d2[:dist] = Bernoulli()
-#        d2[:lnk] = LogitLink()
-#        d2[:Buyer_Pos_P1_is1] = false
-#    end
-#    return d2
-#end
+function expandM(di::Dict)
+    d2=deepcopy(di)
+    if d2[:modelName]==:occ  
+        d2[:dist] = Poisson()
+        d2[:lnk] = LogLink()
+        d2[:Buyer_Pos_P1_is1] = true
+    end
+    if d2[:modelName]==:dolocc  
+        d2[:dist] = Gamma()
+        d2[:lnk] = LogLink()
+        d2[:Buyer_Pos_P1_is1] = true
+    end
+    if d2[:modelName]==:pen
+        d2[:dist] = Bernoulli()
+        d2[:lnk] = LogitLink()
+        d2[:Buyer_Pos_P1_is1] = false
+    end
+    return d2
+end
 #expandM(t)
 
 
+function vif2(m)
+    v = vcov(m)
+    assign = m.mm.assign
+    nms = coefnames(m.mf)
+    if (ipos = findfirst(nms, "(Intercept)")) > 0
+        inds = deleteat!(collect(eachindex(nms)), ipos)
+        v = view(v, inds, inds)
+        assign = view(assign, inds)
+    else
+        warning("No intercept: vifs may not be sensible.")
+    end
+    terms = convert(Vector{Symbol}, m.mf.terms.terms)
+    n_terms = length(terms)
+    if n_terms < 2
+        error("model contains fewer than 2 terms")
+    end
+    R = cov2cor(v)
+    detR = det(Symmetric(R))
+    result = NamedArray(Array(eltype(R), (length(terms), 3)))
+    setnames!(result, string.(terms), 1)
+    setnames!(result, ["GVIF", "Df", "GVIF^(1/(2*Df))"], 2)
+    inds = collect(eachindex(terms))
+    ainds = collect(eachindex(assign))
+    for i in inds
+        subs = find(x -> x == i, assign)
+        notsubs = setdiff(ainds, subs)
+        result[i, 1] = det(Symmetric(R[notsubs, notsubs])) / detR
+        if (result[i, 2] = length(subs)) > 1
+            result[i, 1] *= det(Symmetric(R[subs, subs]))
+        end
+    end
+    if all(result[:, 2] .== 1)
+        return result[:, 1:1]
+    end
+    result
+end
 
-
+function vifDF2(m::RegressionModel)
+    sdf=coefDF(m)
+    vdf=vif2(m)
+    vdf[:parameter] = convert(Array{Symbol}, vdf[:variable])
+    join(sdf,vdf[[:parameter,:vif]], on = :parameter, kind=:outer)
+end
 
 
 function featureSelection(dfd::DataFrame, m::Dict)
@@ -422,7 +463,7 @@ function featureSelection(dfd::DataFrame, m::Dict)
     println(upperModName*" : PVals") #PVals
     f=genF(m[:y_var],vars)
     g1 = glm( f, dfd[convert(Array{Symbol},vcat(f.lhs,f.rhs.args[3:end]))]  , m[:dist], m[:lnk] )
-    sdf = coefDF(g1,true)
+    sdf = coefDF(g1)
     #g1_x= sdf[sdf[:pval].>0.7,:vars]
     g1_x= sdf[sdf[:pval].>0.7,:parameter]
     #vars = rmVars(g1_x)
@@ -443,7 +484,7 @@ function featureSelection(dfd::DataFrame, m::Dict)
         vars=unique(vcat(vars,[:group]))
         f=genF(m[:y_var],vars)
         g = glm( f, dfd[convert(Array{Symbol},vcat(f.lhs,f.rhs.args[3:end]))]  , m[:dist], m[:lnk] )
-        sdf = coefDF(g1, true)
+        sdf = coefDF(g1)
         neutralvars = setdiff(vars,vcat(cfg[:negativevars],cfg[:positivevars])) 
         neg=intersect(cfg[:negativevars],sdf[sdf[:coef].<0,:parameter])
         pos=intersect(cfg[:positivevars],sdf[sdf[:coef].>0,:parameter])
@@ -457,13 +498,13 @@ function featureSelection(dfd::DataFrame, m::Dict)
     println(upperModName*" : SIGN Check 2") 
     (g4, vars_2) = chkSigns(m, initialvars, dfd, cfg)
     function getCorrVars(m::RegressionModel, dfd::DataFrame, vars_2::Array{Symbol})
-        sdf = coefDF(m, true)
+        sdf = coefDF(m)
         vars_2 = convert(Array{Symbol}, setdiff(vars_2, filter(x-> typeof(dfd[x]) in [PooledDataArray{String,UInt8,1}], vars_2)) )
         rm_lst=Symbol[]
         if (length(vars_2) > 1) & (   length(getColswithType("num", dfd, vars_2 ) ) > 1  )
             stackdf = corDFD(dfd,vars_2)
-            stackdf[:variable_pval] = [ sdf[sdf[:parameter].==c,:pval][1]   for c in stackdf[:variable]]
-            stackdf[:vars_pval] = [ sdf[sdf[:parameter].==c,:pval][1]   for c in stackdf[:vars]] 
+            stackdf[:variable_pval] = [ sdf[sdf[:vars].==c,:pval][1]   for c in stackdf[:variable]]
+            stackdf[:vars_pval] = [ sdf[sdf[:vars].==c,:pval][1]   for c in stackdf[:vars]] 
             stackdf[:most_Sig] = map((x,y) -> x < y ? "variable" : "vars" ,stackdf[:variable_pval],stackdf[:vars_pval])
      
             for row in eachrow(stackdf[(stackdf[:value].> 0.8) | (stackdf[:value].<-0.8),:])
@@ -488,7 +529,7 @@ function featureSelection(dfd::DataFrame, m::Dict)
         println( upperModName *" : Z & Vif") #Z & Vif
         f=genF(m[:y_var],finalvars)
         g2 = glm( f, dfd[convert(Array{Symbol},vcat(f.lhs,f.rhs.args[3:end]))]  , m[:dist], m[:lnk] )
-        sdf=vifDF2(g2)
+        sdf=vifDF(g2)
         z = sdf[abs(sdf[:zval]).<1.96,:parameter]
         v = sdf[ !DataArrays.isna(sdf[:vif])&(sdf[:vif].>15),:parameter]
         g2_x =intersect(z,v)
@@ -557,7 +598,7 @@ rlist, glist = genlists(dfd,iocc,idolocc,ipen)
 for i in 1:5
     mlist = [expandM(iocc),expandM(idolocc),expandM(ipen)]
     #mliftβ = [ g.sdf[g.sdf[:vars].==:group,:coef][1] for g in glist]
-    mliftβ = [ sdf[sdf[:parameter].==:group,:coef][1] for sdf in [coefDF(m, true) for m in glist]]
+    mliftβ = [ sdf[sdf[:vars].==:group,:coef][1] for sdf in [coefDF(m) for m in glist]]
     minidx = find(x->x==minimum(mliftβ),mliftβ)[1]
     if  mliftβ[minidx] < 0.0
         #mx=mlist[minidx]
@@ -621,13 +662,18 @@ saveModels(modelsDict, jmod_fname)
 
 
 # ---- END SAVE RESULTS -------
+"""
 
 
+##j = readModels(jmod_fname)
+##group & raneff
 
 
-
-
-
+function raneffStats(raneff::Array{Symbol})
+    #ranef = modelsDict[:ipen][:raneff]
+    
+end
+"""
 
 
 
