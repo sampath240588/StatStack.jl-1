@@ -1,4 +1,37 @@
 #--------------------- MODEL ----------------------------------------
+"""
+function readFixedFile(dfx::DataFrame,mname::String)
+    println("LOADING DFX Fixed")
+    vout = dfx[(dfx[:modelType].=="GLM")&(dfx[:model].==mname),[:parameter,:coef,:stderr,:zval,:pval]]
+    names!(vout,[:x,:estimate, :std_error, :z_value,:pr_z_])
+    return vout
+end
+#readFixedFile(dfx,"occ")
+
+function readRandFile(dfx::DataFrame,mname::String)
+    println("LOADING DFX Rand")
+    vout = dfx[(dfx[:modelType].=="GLMM")&(dfx[:model].==mname),[:ranef,:parameter,:coef,:stderr,:zval,:pval]]
+    vout[:adj_coef] = 0.0
+    vout[:adj_stderr]=  0.0
+    vout[:row] = 0
+    vout[:levelse] = 0
+    vout[:exposed_orig]= 1
+    vout[:exposed] = true
+    vout[:key] = map( (c,l) ->  c*" ("*l*")"  , vout[:ranef],vout[:parameter] ) 
+    for row in eachrow(vout)
+        n=vout[(vout[:ranef].==row[:ranef])&(vout[:parameter].=="none"),:coef][1]
+        s=vout[(vout[:ranef].==row[:ranef])&(vout[:parameter].=="none"),:stderr][1]
+        println(row[:ranef]," ~~ ",n," ~~ ",s)
+        row[:adj_coef] = row[:coef]-n
+        row[:adj_stderr] = sqrt(row[:stderr]^2+s^2)
+        row[:coef] = 0
+    end
+    vout=vout[[  :ranef,:row,:parameter,:coef,:adj_coef,:levelse,:stderr,:adj_stderr,:exposed_orig,:exposed,:key ]]
+    names!(vout,[:class,:row,:level,    :B0  ,:B1      ,:levelse,:SE0   ,:SE1       ,:exposed_orig,:exposed,:key ])
+    return vout[vout[:level].!="none",:]
+end
+#readRandFile(dfx,"occ")
+"""
 
 function readFixedFile(fname::AbstractString)
     if isfile(fname)

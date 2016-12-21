@@ -104,7 +104,9 @@ genScoreTotals
        	exp(fixed + random totals)
        	exp(df_data[:pre_occ_score0] + df_data[:reff_occ]  )
        	e.g. exp(df_data[:pre_occ_score0] + df_data[:reff_occ]  )
+   - now for J : exp(df_data[:pre_occ_score0])
        	or pen : df_data[:pen_score0] = exp((df_data[:pre_pen_score0] + df_data[:reff_pen])) ./ ( exp((df_data[:pre_pen_score0] + df_data[:reff_pen])) +1)
+   - now for J :  sum[Coef*val]+intercept+logvar……… +breakEst for exposed
        	this is used for fixed mean_score0/1 
 
 """
@@ -113,11 +115,12 @@ genScoreTotals
 
 module StatStack
 
-using Compat, DataArrays, GLM, DataFrames, Distributions, NLopt, Showoff, StatsBase, DataStructures, StatsFuns, JuMP, DBAPI, JavaCall, JDBC
+using Compat, DataArrays, GLM, DataFrames, Distributions, NLopt, Showoff, StatsBase, DataStructures, StatsFuns, JuMP
+#, #DBAPI, JavaCall, JDBC
 #using JSON, Requests, HttpParser
 
 import DataArrays
-import DBAPI, JavaCall, JDBC
+#import DBAPI, JavaCall, JDBC
 import StatsBase: coef, coeftable, df, deviance, fit!, fitted, loglikelihood, model_response, nobs, vcov
 import Base: cond, std
 import Distributions: Bernoulli, Binomial, Poisson, Gamma
@@ -172,7 +175,7 @@ export
        genCnts,
        hhcounts,
        df2dict,
-       saveDBora,
+       #saveDBora,
        loadCFG,
        tst2
 
@@ -209,7 +212,7 @@ include("TypesFixed.jl")
 include("TypesRand.jl")
 include("common.jl")
 include("TypesModel.jl")
-include("db.jl")
+#include("db.jl")
 
 
 

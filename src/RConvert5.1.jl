@@ -340,7 +340,7 @@ lowercase!(dfd)
 cfg=lowercase(cfg)
 
 #SAVE FILE
-writetable(root*"/matched_dfd.csv", dfd)
+#writetable(root*"/matched_dfd.csv", dfd)
 #dfd = readtable(root*"/matched_dfd.csv",header=true);
 
 ######################################
@@ -601,7 +601,7 @@ modelsDict[:factors] = unpool(dfd)
 jmod_fname = root*"/dfd_model.json"
 mod_fname = root*"/dfd_model.csv" 
 
-writetable(root*"/dfd_postOutliers.csv", dfd)
+#writetable(root*"/dfd_postOutliers.csv", dfd)
 cols = vcat([:panid, :iso, :group, :buyer_pos_p1],cfg[:random_campaigns])
 cols = vcat(cols,iocc[:finalvars],[iocc[:y_var], iocc[:logvar]])
 cols = vcat(cols,idolocc[:finalvars],[idolocc[:y_var], idolocc[:logvar]])
@@ -671,8 +671,260 @@ saveModels(modelsDict, jmod_fname)
 #end
 
 # ------------------------------------------------------------
+# -------- RESTART KEY!!!!!!!!!!!!!!!!! FROM HERE ------------
+# ------------------------------------------------------------
+
+        
+                
+                
+# ============================ KEY !!!!!!!!!!!!!!!!!
+                
+addprocs([("iriadmin@10.63.36.22", 1), ("iriadmin@10.63.36.23", 1)])
+addprocs(2)
+using DataStructures, DataArrays , DataFrames, StatsFuns, GLM , Distributions, MixedModels, StatsBase, JSON, StatLib
+@everywhere using DataStructures, DataArrays , DataFrames, StatsFuns, GLM , Distributions, MixedModels, StatsBase, JSON, StatLib
+
+                
+root="/mnt/resource/analytics/models/Jenny-o"
+root="/mnt/resource/analytics/models/NatChoice"
+root="/mnt/resource/analytics/models/rev"
+root="/mnt/resource/analytics/models/ALL#10"
+root="/mnt/resource/analytics/models/ALL#11"
+root="/mnt/resource/analytics/models/CDW#6"
+root="/mnt/resource/analytics/models/HormelChili#8"
+root="/mnt/resource/analytics/models/Rev#8"
+                                
+root="/mnt/resource/analytics/models/Jenny-o"
+
+jmod_fname = root*"/dfd_model.json"
+mod_fname = root*"/dfd_model.csv"         
+modelsDict = readModels(jmod_fname) 
+                
+
+
+@everywhere function runGlm(mod_fname::String, jmod_fname::String, modelname::Symbol, ranef::Symbol=:empty)
+    println("Loding data : ")
+    dfd = readtable(mod_fname,header=true);
+    modelsDict = readModels(jmod_fname)
+    poolit!(dfd,modelsDict[:factors])
+    m=modelsDict[modelname]
+    return runGlm(dfd, m, ranef)
+end
+
+@everywhere function runGlm(dfd::DataFrame,m::Dict, ranef::Symbol=:empty)
+    if ranef==:empty
+        f=genF(m[:y_var],m[:finalvars])
+        cols = convert(Array{Symbol},vcat(m[:finalvars], [m[:y_var], m[:logvar]]))
+        println("Ok - Running ",m[:modelName]," -  Glm on proc ",myid()," with : ",f)
+    else
+        f=genF(m[:y_var],setdiff(vcat(m[:finalvars],ranef),[:group]))
+        dfd[ranef] = relevel(dfd[ranef], "none")
+        cols = convert(Array{Symbol},vcat(m[:finalvars], [m[:y_var], m[:logvar]], ranef ))
+        println("Ok - Running ",m[:modelName]," - ",ranef," Glm on proc ",myid()," with : ",f)
+    end
+    if m[:Buyer_Pos_P1_is1]
+        return glm(f, dfd[(dfd[:buyer_pos_p1].==1),cols] , m[:dist], m[:lnk])
+    else
+        return return glm(f, dfd[cols] , m[:dist], m[:lnk])
+    end
+end        
+        
+                
+
+@everywhere function runGlmm(mod_fname::String, jmod_fname::String, modelname::Symbol, ranef::Symbol=:empty)
+    println("Loding data : Glmm : ",modelname," ~~~ ",ranef)
+    dfd = readtable(mod_fname,header=true);
+    modelsDict = readModels(jmod_fname)
+    poolit!(dfd,modelsDict[:factors])
+    m=modelsDict[modelname]
+    if ranef==:empty
+        v_out=Dict()
+        for r in m[:raneff]
+            v_out[r] = runGlmm(dfd, m, [r])
+        end
+        return v_out
+    else
+        return runGlmm(dfd, m, [ranef])
+    end
+end
+ 
+
+@everywhere function runGlmm(dfd::DataFrame,m::Dict, ranef::Array{Symbol}=[:empty])
+    function genFx(y::Symbol, iv::Array{Symbol},ranef::Array{Symbol})  
+        vars=setdiff(iv,vcat([y],ranef,[:group]))
+        eval(parse( string(y)*" ~ 1"* reduce(*, [ " + "*  string(c) for c in vars ] ) * reduce(*, [ " + "*  "(1 | "*string(c)*")" for c in ranef ] )  ) )
+    end   
+    ranef = ranef==[:empty] ? m[:raneff]  : ranef
+    for r in ranef
+        dfd[r] = relevel(dfd[r], "none")
+    end
+    f=genFx(m[:y_var],m[:finalvars],ranef)
+    cols = convert(Array{Symbol},vcat(m[:finalvars], [m[:y_var], m[:logvar]], ranef ))
+    println("Ok - Running ",m[:modelName]," - ",ranef," Glmm on proc ",myid()," with : ",f)
+    if m[:Buyer_Pos_P1_is1]
+        gmm1 = fit!(glmm(f, dfd[(dfd[:buyer_pos_p1].==1),cols] , m[:dist], m[:lnk]), false, 0)
+        if sum(raneffect(gmm1)[:coef]) == 0 profileθ(gmm1) end
+        return gmm1
+    else
+        gmm1 = fit!(glmm(f, dfd[cols], m[:dist], m[:lnk]), false, 0)
+        if sum(raneffect(gmm1)[:coef]) == 0 profileθ(gmm1) end
+        return gmm1
+    end
+end
+
+                                          
+               
+                
+function runModels(mod_fname::String, jmod_fname::String, modelsDict::Dict)
+   q = Symbol[]
+   cnt=0
+   for (k,v) in OrderedDict(m=>modelsDict[m][:raneff] for m in [:ipen,:idolocc,:iocc]) 
+        for r in v push!(q,k); push!(q,r); cnt=cnt+1 end 
+   end
+   x=reshape(q, (2,cnt))
+   ml = permutedims(x, [2, 1])
+   m=:empty
+   for i in 1:length(ml[:,1]) 
+       if m != ml[i,:][1]
+           gr=Symbol("glm_"*string(ml[i,:][1]))
+           @swarm gr runGlm(mod_fname, jmod_fname, ml[i,:][1])
+           m=ml[i,:][1]
+       end
+       r=Symbol("glmm_"*string(ml[i,:][1])*"_"*string(ml[i,:][2]))
+       @swarm r runGlmm(mod_fname, jmod_fname, ml[i,:][1], ml[i,:][2]) 
+       covg=Symbol("covglm_"*string(ml[i,:][1])*"_"*string(ml[i,:][2])   )
+       @swarm covg runGlm(mod_fname, jmod_fname, ml[i,:][1], ml[i,:][2]) 
+   end 
+                            
+end        
+ 
+runModels(mod_fname, jmod_fname,modelsDict)                   
+while !iscompletew() println("Not Complete yet!"); sleep(5); end                
+println("DONE!DONE!DONE!")
+
+                    
+                    
+function consolidateResults(modelsDict::Dict)  
+  sdf = DataFrame(parameter=String[], coef=Int64[], stderr=Int64[], zval=Int64[], pval=Int64[], model=Symbol[], ranef=Symbol[], modelType=Symbol[])
+    for m in [:iocc, :idolocc, :ipen]
+        g = getw(  Symbol("glm_"*string(m))    )
+        #g = takew(  Symbol("glm_"*string(m))    )
+        dfx = coefDF(g,false)
+        dfx[:model] = Symbol(replace(string(m),"i",""))
+        dfx[:ranef] = :none
+        dfx[:modelType] = :GLM
+        sdf = vcat(sdf,dfx)
+        grp = sdf[(sdf[:modelType].==:GLM)&(sdf[:model].==Symbol(replace(string(m),"i","")))&(sdf[:parameter].=="group"),:coef][1]
+        err = sdf[(sdf[:modelType].==:GLM)&(sdf[:model].==Symbol(replace(string(m),"i","")))&(sdf[:parameter].=="group"),:stderr][1]
+        for r in  modelsDict[m][:raneff]
+            k="_"*string(m)*"_"*string(r)
+            g = getw(Symbol("glmm"*k))
+            dfx = raneffect(g)     
+            dfx[:zval]=0.0
+            dfx[:pval]=0.0
+            dfx[:model] = Symbol(replace(string(m),"i",""))
+            dfx[:ranef]=r
+            dfx[:modelType]=:GLMM
+            sdf = vcat(sdf,dfx)
+                                
+            g = getw(Symbol("covglm"*k))
+            dfx = coefDF(g,false)
+            dfx[:model] = Symbol(replace(string(m),"i",""))
+            dfx[:ranef] = r
+            dfx[:modelType] = :RanCov  
+            dfx = dfx[findin(dfx[:parameter],filter(x->contains(x,string(r)) ,Array(dfx[:parameter]))),:]
+            dfx[:coef]=dfx[:coef]-grp  
+            dfx[:stderr]=sqrt(dfx[:stderr].^2+err^2)
+            dfx[:parameter] = map(x-> replace(x,string(r)*": ",""),dfx[:parameter])
+            sdf = vcat(sdf,dfx)                    
+        end
+    end
+    return sdf
+end     
+dfx = consolidateResults(modelsDict)      
+        
+writetable(root*"/campaign.csv", dfx)                      
+        
+        
+                
+                
+ 
+function runModels(mod_fname::String, modelsDict::Dict)
+    dfd = readtable(mod_fname,header=true);
+    poolit!(dfd,modelsDict[:factors])
+    res = OrderedDict()
+    q = Symbol[]
+    cnt=0
+    for (k,v) in OrderedDict(m=>modelsDict[m][:raneff] for m in [:ipen,:idolocc,:iocc]) 
+         for r in v push!(q,k); push!(q,r); cnt=cnt+1 end 
+    end
+    x=reshape(q, (2,cnt))
+    ml = permutedims(x, [2, 1])
+    m=:empty
+    for i in 1:length(ml[:,1]) 
+        if m != ml[i,:][1]
+            gr=Symbol("glm_"*string(ml[i,:][1]))
+            res[gr] = runGlm(dfd,modelsDict[ml[i,:][1]]) #res[gr] = runGlm(mod_fname, jmod_fname, ml[i,:][1])
+            m=ml[i,:][1]
+        end
+        r=Symbol("glmm_"*string(ml[i,:][1])*"_"*string(ml[i,:][2]))
+        res[r] = runGlmm(dfd,modelsDict[m], [ml[i,:][2]])  #res[r] = runGlmm(mod_fname, jmod_fname, ml[i,:][1], ml[i,:][2]) 
+        covg=Symbol("covglm_"*string(ml[i,:][1])*"_"*string(ml[i,:][2]))
+        res[covg] = runGlm(dfd,modelsDict[m], ml[i,:][2])   #res[covg] = runGlm(mod_fname, jmod_fname, ml[i,:][1], ml[i,:][2]) 
+    end 
+    return res                        
+end        
+#dx = runModels(mod_fname,modelsDict)                 
+  
+function consolidateResults(modelsDict::Dict,dx::OrderedDict)  
+  sdf = DataFrame(parameter=String[], coef=Int64[], stderr=Int64[], zval=Int64[], pval=Int64[], model=Symbol[], ranef=Symbol[], modelType=Symbol[])
+    for m in [:iocc, :idolocc, :ipen]
+        g = dx[Symbol("glm_"*string(m))]
+        dfx = coefDF(g,false)
+        dfx[:model] = Symbol(replace(string(m),"i",""))
+        dfx[:ranef] = :none
+        dfx[:modelType] = :GLM
+        sdf = vcat(sdf,dfx)
+        grp = sdf[(sdf[:modelType].==:GLM)&(sdf[:model].==Symbol(replace(string(m),"i","")))&(sdf[:parameter].=="group"),:coef][1]
+        err = sdf[(sdf[:modelType].==:GLM)&(sdf[:model].==Symbol(replace(string(m),"i","")))&(sdf[:parameter].=="group"),:stderr][1]
+        for r in  modelsDict[m][:raneff]
+            k="_"*string(m)*"_"*string(r)
+            g = dx[Symbol("glmm"*k)]
+            dfx = raneffect(g)     
+            dfx[:zval]=0.0
+            dfx[:pval]=0.0
+            dfx[:model] = Symbol(replace(string(m),"i",""))
+            dfx[:ranef]=r
+            dfx[:modelType]=:GLMM
+            sdf = vcat(sdf,dfx)
+            g = dx[Symbol("covglm"*k)]
+            dfx = coefDF(g,false)
+            dfx[:model] = Symbol(replace(string(m),"i",""))
+            dfx[:ranef] = r
+            dfx[:modelType] = :RanCov  
+            dfx = dfx[findin(dfx[:parameter],filter(x->contains(x,string(r)) ,Array(dfx[:parameter]))),:]
+            dfx[:coef]=dfx[:coef]-grp  
+            dfx[:stderr]=sqrt(dfx[:stderr].^2+err^2)
+            dfx[:parameter] = map(x-> replace(x,string(r)*": ",""),dfx[:parameter])
+            sdf = vcat(sdf,dfx)                    
+        end
+    end
+    return sdf
+end     
+#dfx = consolidateResultsS(modelsDict, dx)      
+#writetable(root*"/campaign.csv", dfx)  
+                        
+                        
+# ===========
+
+
+
+
+
+# ------------------------------------------------------------
 # -------- RESTART FROM HERE ------------
 # ------------------------------------------------------------
+
 """
 the "modelType" column:
 MixedModels = glmm models
@@ -1027,6 +1279,12 @@ writetable(root*"/campaign.csv", mdfd)
         
         
         
+        
+        
+        
+        
+        
+        
 
 #macro checked_lib(libname, path)
 #    println("GTPath  : ",path,"  ~  ",libname)
@@ -1036,19 +1294,44 @@ writetable(root*"/campaign.csv", mdfd)
 
 # http://julia-programming-language.2336112.n4.nabble.com/Passing-an-expression-to-a-macro-td3736.html
 
+               
+# -------------------------------------------------------------------------------------------------------
+# -----------------------  TEST SWARM 2 -----------------------------------------------------------------
+# -------------------------------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------------------------------         
+            
+
+                
+                
+                
+                
+                
+                
+                
+# ============================ KEY !!!!!!!!!!!!!!!!!
+                
 addprocs([("iriadmin@10.63.36.22", 1), ("iriadmin@10.63.36.23", 1)])
 addprocs(2)
 using DataStructures, DataArrays , DataFrames, StatsFuns, GLM , Distributions, MixedModels, StatsBase, JSON, StatLib
 @everywhere using DataStructures, DataArrays , DataFrames, StatsFuns, GLM , Distributions, MixedModels, StatsBase, JSON, StatLib
 
-
+                
+root="/mnt/resource/analytics/models/Jenny-o"
+root="/mnt/resource/analytics/models/NatChoice"
+root="/mnt/resource/analytics/models/rev"
+root="/mnt/resource/analytics/models/ALL#10"
+root="/mnt/resource/analytics/models/ALL#11"
+root="/mnt/resource/analytics/models/CDW#6"
+root="/mnt/resource/analytics/models/HormelChili#8"
+root="/mnt/resource/analytics/models/Rev#8"
+                
+                
 root="/mnt/resource/analytics/models/Jenny-o"
 jmod_fname = root*"/dfd_model.json"
 mod_fname = root*"/dfd_model.csv"         
 modelsDict = readModels(jmod_fname) 
+                
 
-        
-        
 
 @everywhere function runGlm(mod_fname::String, jmod_fname::String, modelname::Symbol, ranef::Symbol=:empty)
     println("Loding data : ")
@@ -1077,10 +1360,10 @@ end
     end
 end        
         
-        
-        
+                
+
 @everywhere function runGlmm(mod_fname::String, jmod_fname::String, modelname::Symbol, ranef::Symbol=:empty)
-    println("Loding data : ")
+    println("Loding data : Glmm : ",modelname," ~~~ ",ranef)
     dfd = readtable(mod_fname,header=true);
     modelsDict = readModels(jmod_fname)
     poolit!(dfd,modelsDict[:factors])
@@ -1120,448 +1403,188 @@ end
     end
 end
 
+                                          
+               
+                
+function runModels(mod_fname::String, jmod_fname::String, modelsDict::Dict)
+   q = Symbol[]
+   cnt=0
+   for (k,v) in OrderedDict(m=>modelsDict[m][:raneff] for m in [:ipen,:idolocc,:iocc]) 
+        for r in v push!(q,k); push!(q,r); cnt=cnt+1 end 
+   end
+   x=reshape(q, (2,cnt))
+   ml = permutedims(x, [2, 1])
+   m=:empty
+   for i in 1:length(ml[:,1]) 
+       if m != ml[i,:][1]
+           gr=Symbol("glm_"*string(ml[i,:][1]))
+           @swarm gr runGlm(mod_fname, jmod_fname, ml[i,:][1])
+           m=ml[i,:][1]
+       end
+       r=Symbol("glmm_"*string(ml[i,:][1])*"_"*string(ml[i,:][2]))
+       @swarm r runGlmm(mod_fname, jmod_fname, ml[i,:][1], ml[i,:][2]) 
+       covg=Symbol("covglm_"*string(ml[i,:][1])*"_"*string(ml[i,:][2])   )
+       @swarm covg runGlm(mod_fname, jmod_fname, ml[i,:][1], ml[i,:][2]) 
+   end 
+                            
+end        
+ 
+runModels(mod_fname, jmod_fname,modelsDict)                   
+while !iscompletew() println("Not Complete yet!"); sleep(5); end                
+println("DONE!DONE!DONE!")
+
+                    
+                    
+function consolidateResults(modelsDict::Dict)  
+  sdf = DataFrame(parameter=String[], coef=Int64[], stderr=Int64[], zval=Int64[], pval=Int64[], model=Symbol[], ranef=Symbol[], modelType=Symbol[])
+    for m in [:iocc, :idolocc, :ipen]
+        g = getw(  Symbol("glm_"*string(m))    )
+        #g = takew(  Symbol("glm_"*string(m))    )
+        dfx = coefDF(g,false)
+        dfx[:model] = Symbol(replace(string(m),"i",""))
+        dfx[:ranef] = :none
+        dfx[:modelType] = :GLM
+        sdf = vcat(sdf,dfx)
+        grp = sdf[(sdf[:modelType].==:GLM)&(sdf[:model].==Symbol(replace(string(m),"i","")))&(sdf[:parameter].=="group"),:coef][1]
+        err = sdf[(sdf[:modelType].==:GLM)&(sdf[:model].==Symbol(replace(string(m),"i","")))&(sdf[:parameter].=="group"),:stderr][1]
+        for r in  modelsDict[m][:raneff]
+            k="_"*string(m)*"_"*string(r)
+            g = getw(Symbol("glmm"*k))
+            dfx = raneffect(g)     
+            dfx[:zval]=0.0
+            dfx[:pval]=0.0
+            dfx[:model] = Symbol(replace(string(m),"i",""))
+            dfx[:ranef]=r
+            dfx[:modelType]=:GLMM
+            sdf = vcat(sdf,dfx)
+                                
+            g = getw(Symbol("covglm"*k))
+            dfx = coefDF(g,false)
+            dfx[:model] = Symbol(replace(string(m),"i",""))
+            dfx[:ranef] = r
+            dfx[:modelType] = :RANEFF_GLM  
+            dfx = dfx[findin(dfx[:parameter],filter(x->contains(x,string(r)) ,Array(dfx[:parameter]))),:]
+            dfx[:coef]=dfx[:coef]-grp  
+            dfx[:stderr]=sqrt(dfx[:stderr].^2+err^2)
+            dfx[:parameter] = map(x-> replace(x,string(r)*": ",""),dfx[:parameter])
+            sdf = vcat(sdf,dfx)                    
+        end
+    end
+    return sdf
+end     
+dfx = consolidateResults(modelsDict)      
         
+writetable(root*"/campaign.csv", dfx)                      
         
-const SHELF = OrderedDict()
-freew() = setdiff(workers(),[v[:worker] for (k,v) in SHELF])             
-hasfreew() = length(freew()) > 0 ? true : false
-nextFreew() = length(freew()) > 0 ? freew()[1]   : NA
-#statusW() =  [ string(k)*"   status: "*string(v[:status]) for (k,v) in values(SHELF)] 
-#statusw() =  for (k,v) in SHELF println(string(k)*"   status: "*string(v[:status])*"   "*string(v[:worker]) ) end
-notcompletew() = filter((k,v)-> v[:status]!=:complete ,SHELF) 
-isCompletew() = length(notcompletew(SHELF)) == 0 ? true : false 
-        
-type statusW function statusW()  return new() end  end 
-function Base.show(io::IO, statusw::statusW)  for (k,v) in SHELF println(string(k)*"   status: "*string(v[:status])*"   "*string(v[:worker]) ) end end
-statusw=statusW()
         
                 
-        
-        
-function swarm(expr, SHELF::OrderedDict) 
-    #dump(expr)
-    k=Symbol("swarm"*string(length(SHELF)+1))
-    SHELF[k] = Dict{Symbol,Any}(:worker =>0,:expr_orig => deepcopy(expr), :resp => :tttt, :status =>:ready, :channel => Channel(1))
-    t = SHELF[k]
-    while !hasfreew() sleep(15) end   # println("waiting for free worker");
-    t[:worker] = nextFreew()
-    wid = t[:worker]        
-    if isna(wid)
-        return false
-    else
-        #remotecall_fetch(runGlmm, wid, mod_fname, jmod_fname, w[:model], w[:renef] )
-        t[:status] = :running
-        splice!(expr.args, 1:1,[:remotecall_fetch,expr.args[1],wid])
-        t[:expr] = expr
-        println("Starting model")  
-        @async put!(t[:channel], eval(t[:expr]) ) 
-        while isready(t[:channel])==false sleep(15) end  #println("NOT Ready : ",t[:worker] );      
-        t[:results] = take!(t[:channel])    
-        t[:status] = :complete
-        t[:worker] = 0
-        println("Task Completed : ",k)
-        close(t[:channel]) 
-        return true
+                
+ 
+function runModels(mod_fname::String, modelsDict::Dict)
+    dfd = readtable(mod_fname,header=true);
+    poolit!(dfd,modelsDict[:factors])
+    res = OrderedDict()
+    q = Symbol[]
+    cnt=0
+    for (k,v) in OrderedDict(m=>modelsDict[m][:raneff] for m in [:ipen,:idolocc,:iocc]) 
+         for r in v push!(q,k); push!(q,r); cnt=cnt+1 end 
     end
-end
-        
-
-macro swarm(expr)
-    #dump(k)
-    #println("0. Macro key : ",k, " ... ", typeof(k))
-    #k = typeof(k) in [Expr,QuoteNode] ? Symbol(eval(k)) : Symbol(k)
-    #println("1. Macro key : ",k, " ... ", typeof(k))
-    if typeof(expr)==Expr
-        println("swarm macro : ", expr)
-        @async swarm(expr, SHELF)
-    else
-        quote
-            println("swarm macro : ", $expr)
-            @async swarm($expr, SHELF)
+    x=reshape(q, (2,cnt))
+    ml = permutedims(x, [2, 1])
+    m=:empty
+    for i in 1:length(ml[:,1]) 
+        if m != ml[i,:][1]
+            gr=Symbol("glm_"*string(ml[i,:][1]))
+            res[gr] = runGlm(dfd,modelsDict[ml[i,:][1]]) #res[gr] = runGlm(mod_fname, jmod_fname, ml[i,:][1])
+            m=ml[i,:][1]
         end
-    end
-end
-            
-###@swarm modelme(mod_fname, jmod_fname)            
-#@swarm  m = runGlmm(mod_fname, jmod_fname, :ipen, :creative )
-
-
-
-function swarmModels(mod_fname::String, jmod_fname::String, modelsDict::Dict)
-   q = Symbol[]
-   cnt=0
-   for (k,v) in OrderedDict(m=>modelsDict[m][:raneff] for m in [:ipen,:idolocc,:iocc]) 
-        for r in v push!(q,k); push!(q,r); cnt=cnt+1 end 
-   end
-   x=reshape(q, (2,cnt))
-   ml = permutedims(x, [2, 1])
-   for i in 1:length(ml[:,1]) 
-       #r=Symbol("glmm_"*string(ml[i,:][1])*"_"string(ml[i,:][2]))
-       #rq = QuoteNode(r)
-       #println("swarmModels Key : ", r)
-       k=QuoteNode(ml[i,:][1])   
-       v=QuoteNode(ml[i,:][2])
-       expr = :(runGlmm(mod_fname, jmod_fname, $k, $v) )
-       #rkey = :($rq)
-       #@swarm rkey expr
-       @swarm expr
-   end 
-                            
+        r=Symbol("glmm_"*string(ml[i,:][1])*"_"*string(ml[i,:][2]))
+        res[r] = runGlmm(dfd,modelsDict[m], [ml[i,:][2]])  #res[r] = runGlmm(mod_fname, jmod_fname, ml[i,:][1], ml[i,:][2]) 
+        covg=Symbol("covglm_"*string(ml[i,:][1])*"_"*string(ml[i,:][2]))
+        res[covg] = runGlm(dfd,modelsDict[m], ml[i,:][2])   #res[covg] = runGlm(mod_fname, jmod_fname, ml[i,:][1], ml[i,:][2]) 
+    end 
+    return res                        
 end        
- 
-swarmModels(mod_fname, jmod_fname,modelsDict)        
-#@swarm  runGlmm(mod_fname, jmod_fname, :ipen, :creative )        
-#@swarm  runGlm(mod_fname, jmod_fname, :ipen, :creative )         
- 
-            
-            
-            
-# -------------------------------------------------------------------------------------------------------
-# -------------------------------------------------------------------------------------------------------
-# -------------------------------------------------------------------------------------------------------
-# -------------------------------------------------------------------------------------------------------
-           
-
-function swarm(k::Symbol, expr, SHELF::OrderedDict) 
-    #dump(expr)
-    #k=Symbol("swarm"*string(length(SHELF)+1))
-    SHELF[k] = Dict{Symbol,Any}(:worker =>0,:expr_orig => deepcopy(expr), :resp => :tttt, :status =>:ready, :channel => Channel(1))
-    t = SHELF[k]
-    while !hasfreew() sleep(15) end   # println("waiting for free worker");
-    t[:worker] = nextFreew()
-    wid = t[:worker]        
-    if isna(wid)
-        return false
-    else
-        #remotecall_fetch(runGlmm, wid, mod_fname, jmod_fname, w[:model], w[:renef] )
-        t[:status] = :running
-        splice!(expr.args, 1:1,[:remotecall_fetch,expr.args[1],wid])
-        t[:expr] = expr
-        println("Starting model")  
-        @async put!(t[:channel], eval(t[:expr]) ) 
-        while isready(t[:channel])==false sleep(15) end  #println("NOT Ready : ",t[:worker] );      
-        t[:results] = take!(t[:channel])    
-        t[:status] = :complete
-        t[:worker] = 0
-        println("Task Completed : ",k)
-        close(t[:channel]) 
-        return true
-    end
-end
-        
-
-macro swarm(k::Any, expr)
-    dump(k)
-    println("0. Macro key : ",k, " ... ", typeof(k))
-    k = typeof(k) in [Expr,QuoteNode] ? Symbol(eval(k)) : Symbol(k)
-    println("1. Macro key : ",k, " ... ", typeof(k))
-    if typeof(expr)==Expr
-        println("swarm macro : ", expr)
-        @async swarm(k, expr, SHELF)
-    else
-        quote
-            println("swarm macro : ", $expr)
-            @async swarm(k, $expr, SHELF)
+#dx = runModelsS(mod_fname,modelsDict)                 
+  
+function consolidateResults(modelsDict::Dict,dx::OrderedDict)  
+  sdf = DataFrame(parameter=String[], coef=Int64[], stderr=Int64[], zval=Int64[], pval=Int64[], model=Symbol[], ranef=Symbol[], modelType=Symbol[])
+    for m in [:iocc, :idolocc, :ipen]
+        g = dx[Symbol("glm_"*string(m))]
+        dfx = coefDF(g,false)
+        dfx[:model] = Symbol(replace(string(m),"i",""))
+        dfx[:ranef] = :none
+        dfx[:modelType] = :GLM
+        sdf = vcat(sdf,dfx)
+        grp = sdf[(sdf[:modelType].==:GLM)&(sdf[:model].==Symbol(replace(string(m),"i","")))&(sdf[:parameter].=="group"),:coef][1]
+        err = sdf[(sdf[:modelType].==:GLM)&(sdf[:model].==Symbol(replace(string(m),"i","")))&(sdf[:parameter].=="group"),:stderr][1]
+        for r in  modelsDict[m][:raneff]
+            k="_"*string(m)*"_"*string(r)
+            g = dx[Symbol("glmm"*k)]
+            dfx = raneffect(g)     
+            dfx[:zval]=0.0
+            dfx[:pval]=0.0
+            dfx[:model] = Symbol(replace(string(m),"i",""))
+            dfx[:ranef]=r
+            dfx[:modelType]=:GLMM
+            sdf = vcat(sdf,dfx)
+            g = dx[Symbol("covglm"*k)]
+            dfx = coefDF(g,false)
+            dfx[:model] = Symbol(replace(string(m),"i",""))
+            dfx[:ranef] = r
+            dfx[:modelType] = :RANEFF_GLM  
+            dfx = dfx[findin(dfx[:parameter],filter(x->contains(x,string(r)) ,Array(dfx[:parameter]))),:]
+            dfx[:coef]=dfx[:coef]-grp  
+            dfx[:stderr]=sqrt(dfx[:stderr].^2+err^2)
+            dfx[:parameter] = map(x-> replace(x,string(r)*": ",""),dfx[:parameter])
+            sdf = vcat(sdf,dfx)                    
         end
     end
-end
-            
-###@swarm modelme(mod_fname, jmod_fname)            
-#@swarm  m = runGlmm(mod_fname, jmod_fname, :ipen, :creative )
-
-            
-            
-using DataStructures, DataArrays , DataFrames, StatsFuns, GLM , Distributions, MixedModels, StatsBase, JSON, StatLib
-root="/mnt/resource/analytics/models/Jenny-o"
-jmod_fname = root*"/dfd_model.json"
-mod_fname = root*"/dfd_model.csv"         
-modelsDict = readModels(jmod_fname) 
-
+    return sdf
+end     
+#dfx = consolidateResultsS(modelsDict, dx)      
+#writetable(root*"/campaign.csv", dfx)  
                         
-macro ztzx(expr)
-    println("working")
-    println(" ~~" )
-    dump(expr)
-end
+                        
+# ===========
 
-
-
-function swarmModels(mod_fname::String, jmod_fname::String, modelsDict::Dict)
-   q = Symbol[]
-   cnt=0
-   for (k,v) in OrderedDict(m=>modelsDict[m][:raneff] for m in [:ipen,:idolocc,:iocc]) 
-        for r in v push!(q,k); push!(q,r); cnt=cnt+1 end 
-   end
-   x=reshape(q, (2,cnt))
-   ml = permutedims(x, [2, 1])
-   for i in 1:length(ml[:,1]) 
-       #r=Symbol("glmm_"*string(ml[i,:][1])*"_"string(ml[i,:][2]))
-       #rq = QuoteNode(r)
-       #println("swarmModels Key : ", r)
-       k=QuoteNode(ml[i,:][1])   
-       v=QuoteNode(ml[i,:][2])
-       expr = :(runGlmm(mod_fname, jmod_fname, $k, $v) )
-       #rkey = :($rq)
-       #@swarm rkey expr
-       @ztzx expr
-   end 
-                            
-end        
             
- swarmModels(mod_fname, jmod_fname,modelsDict)            
-            
-            
-            
-            
-            
-            
-            
-# -------------------------------------------------------------------
-# ---------------- REPLICATE SPAWNAT 
-         
-spawnat(p, thunk) = sync_add(remotecall(thunk, p))
-
-macro spawnat(p, expr)
-    expr = localize_vars(esc(:(()->($expr))), false)
-    :(spawnat($(esc(p)), $expr))
-end
-            
-            
-            
-            
-        
-        
-        
-        
-        
-        
-            
-            
-    
-
-        
-"""
-find_vars(e) = find_vars(e, [])
-function find_vars(e, lst)
-    if isa(e,Symbol)
-        if current_module()===Main && isdefined(e)
-            # Main runs on process 1, so send globals from there, excluding
-            # things defined in Base.
-            if !isdefined(Base,e) || eval(Base,e)!==eval(current_module(),e)
-                push!(lst, e)
-            end
-        end
-    elseif isa(e,Expr) && e.head !== :quote && e.head !== :top && e.head !== :core
-        for x in e.args
-            find_vars(x,lst)
-        end
-    end
-    lst
-end
-
-        
-localize_vars(expr) = localize_vars(expr, true)
-function localize_vars(expr, esca)
-    v = find_vars(expr)
-    if esca
-        v = map(esc,v)
-    end
-    Expr(:localize, expr, v...)
-end
-"""        
-spawnat2(p, thunk) = sync_add(remotecall(thunk, p))
-
-macro spawnat2(p, expr)
-            expr = Base.localize_vars(esc(:(()->($expr))), false)
-            println(   :(spawnat2($(esc(p)), $expr))     )
-end   
-@spawnat2 55 x=getipaddr()
-        
-# +++++++++Distribute Macro ++++++++++++++++++++++++++++
-using DataStructures
-    
-function swam(mod_fname::String, jmod_fname::String, shelf::OrderedDict)
-     wids = workers()    
-     for v in values(shelf)  v[:status]=:ready; v[:worker]=0; v[:channel]=Channel(1) end 
-     freeW() = setdiff(wids,[v[:worker] for (k,v) in filter((k,v)-> v[:status]==:running ,shelf)]) 
-     hasfreeW() = length(freeW()) > 0 ? true : false
-     nextFreeW() = length(freeW()) > 0 ? freeW()[1]   : NA
-        
-     function runTask(mkey::Symbol)
-        wid = nextFreeW() 
-        if isna(wid)
-            return false
-        else
-            w = shelf[mkey]
-            w[:status] = :running
-            w[:worker] = wid
-            @async put!(w[:channel], remotecall_fetch(runGlmm, wid, mod_fname, jmod_fname, w[:model], w[:renef] )) 
-            return true
-        end
-     end
-
-     waitforFreeWorker() = while !hasfreeW() println("waiting"); processReady(shelf); sleep(15) end
-     @async for (k,v) in shelf
-         waitforFreeWorker()
-         println("running : ",k)
-         runTask(k)
-     end
-
-end
-    
-
-using DataStructures
-const SHELF = OrderedDict()
-        
- 
-        
-tt = Channel(1)
-@async put!(tt, remotecall_fetch(getipaddr, 2 ))
-isready(tt)
-x = take!(tt)
-        
-        
-        
-macro swam(p, expr)
-    println(expr,"\n\n")
-    dump(expr)
-    splice!(expr.args, 1:1,[:remotecall_fetch,expr.args[1],p])
-    println("NEW : ")
-    dump(expr)
-    #expr = Base.localize_vars(esc(:(()->($expr))), false)
-end    
-@swam 2 modelme(mod_fname, jmod_fname, shelf)
-    
-       
-        
-
-        
-        
-# ------------------------------------------------------
-function sync_add(r)
-    spawns = get(task_local_storage(), :SPAWNS, ())
-    if spawns !== ()
-        push!(spawns[1], r)
-        if isa(r, Task)
-            tls_r = get_task_tls(r)
-            tls_r[:SUPPRESS_EXCEPTION_PRINTING] = true
-        end
-    end
-    r
-end
-
-spawnat(p, thunk) = sync_add(remotecall(thunk, p))
-
-macro spawnat(p, expr)
-    expr = localize_vars(esc(:(()->($expr))), false)
-    :(spawnat($(esc(p)), $expr))
-end
-
-macro run(p, expr)
-    expr = localize_vars(esc(:(()->($expr))), false)
-    :(spawnat($(esc(p)), $expr))
-end
-    
-
-    
- macro s_str(p)
-         quote
-           Symbol($p)
-         end
- end
-    
-    
-xxxxx=Channel(1)
-@async put!(w[:channel], remotecall_fetch(func_name, procID, args )) 
-    
-macro runon(p, expr)
-    println(expr,"\n\n")
-    dump(expr)
-    #splice!(a, 4:4, [4,5,11,12,13,14,15,16])
-    #splice!(expr.args, 1:1, [expr.args[1]])
-    splice!(expr.args, 1:1,[:remotecall_fetch,expr.args[1],p])
-        #exp2 = Expr(vcat(:call,expr.args[1], p,expr.args[2:end]), Any)
-        println("NEW : ")
-        dump(expr)
-    #push!(expr.args,p)
-    #expr = Base.localize_vars(esc(:(()->($expr))), false)
-    #:(spawnat($(esc(p)), $expr))
-    #println(expr)
-    #ex = Expr(:call, :+, a, :b)
-end    
-@runon 2 modelme(mod_fname, jmod_fname, shelf)
-
-
-
-macro swam(p, expr)
-    expr = localize_vars(esc(:(()->($expr))), false)
-    :(swam($(esc(p)), $expr))
-end        
-swam(p, thunk) = sync_add(remotecall(thunk, p))
-        
-macro runon(p, expr)
-            println("Param P : ",p)
-            println("Expr : ",expr)
-            println("Expr HEAD: ",expr.head)
-    dump(expr)
-end    
-@runon 77 zzz=modelme(mod_fname, jmod_fname, shelf)        
-        
-# +++++++++++++++++++++++++++++++++++++++
-using DataStructures
-    
-function swam(mod_fname::String, jmod_fname::String, shelf::OrderedDict)
-     wids = workers()    
-     for v in values(shelf)  v[:status]=:ready; v[:worker]=0; v[:channel]=Channel(1) end 
-     freeW() = setdiff(wids,[v[:worker] for (k,v) in filter((k,v)-> v[:status]==:running ,shelf)]) 
-     hasfreeW() = length(freeW()) > 0 ? true : false
-     nextFreeW() = length(freeW()) > 0 ? freeW()[1]   : NA
-        
-     function runTask(mkey::Symbol)
-        wid = nextFreeW() 
-        if isna(wid)
-            return false
-        else
-            w = shelf[mkey]
-            w[:status] = :running
-            w[:worker] = wid
-            @async put!(w[:channel], remotecall_fetch(runGlmm, wid, mod_fname, jmod_fname, w[:model], w[:renef] )) 
-            return true
-        end
-     end
-
-     waitforFreeWorker() = while !hasfreeW() println("waiting"); processReady(shelf); sleep(15) end
-     @async for (k,v) in shelf
-         waitforFreeWorker()
-         println("running : ",k)
-         runTask(k)
-     end
-
-end
-    
-
-using DataStructures
-const SHELF = OrderedDict()
-ml = genModelList(modelsDict)
-shelf = OrderedDict(Symbol(string(ml[i,:][1])*"_"*string(ml[i,:][2]))=> Dict{Symbol,Any}( :model=>ml[i,:][1],:renef=>ml[i,:][2]) for i in 1:length(ml[:,1]))  
-            
-macro swam(p, expr)
-    println(expr,"\n\n")
-    dump(expr)
-    splice!(expr.args, 1:1,[:remotecall_fetch,expr.args[1],p])
-    println("NEW : ")
-    dump(expr)
-    #expr = Base.localize_vars(esc(:(()->($expr))), false)
-end    
-@spawnatall 2 modelme(mod_fname, jmod_fname, shelf)
-    
-
-
-macro pushspawnlist!(p)
-         quote
-           Symbol($p)
-         end
- end
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
 # +++++++++++++++++++++++++++++++++++++
     
             
@@ -1606,28 +1629,7 @@ using HDF5, JavaCall, JuMP, StatStack, NLsolve, DBAPI, JavaCall, JDBC, HDF5, JLD
         
 """     
         
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
+            
         
         
         

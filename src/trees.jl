@@ -145,62 +145,14 @@ dfd[:datenumlag] = map(x->Int64(x),dfd[:datelag])
 
 #Date("2016-07-06",Dates.DateFormat("y-m-d"))
 
-# ----------------- here ------------------
-
-
+# ----------------- CHUNKS  ------------------
 #Date("2016-06-30",Dates.DateFormat("y-m-d"))-Dates.Day(7)
-
-
-brks=[:html5
- ,:static
- ,:native_creative
- ,:video
- ,:content
- ,:contextual
- ,:direct
- ,:prospecting
- ,:retargeting
- ,:behavorial
- ,:native
- ,:predictive
- ,:thirdrdparty
- ,:pmp
- ,:buzzfeed
- ,:hulu
- ,:popsugarus
- ,:rachaelraymag
- ,:shape
- ,:blank
- ,:eatingwell
- ,:meredithcorporation
- ,:realsimple
- ,:turndsp
- ,:cookinglight
- ,:dataxu
- ,:allrecipes
- ,:amazon
- ,:myfitnesspal
- ,:womenshealth
- ,:yummly
-,:youtube ]
-
-
-
-
-
-
-
-
 #Date("2016-06-30",Dates.DateFormat("y-m-d"))
-
 #dfd[:date] = map(x-> Date(replace(x, " 00:00:00",""),dformat), dfd[:date1])
 #Date(dfd[:date1],dformat)
 #Date(dfd[:date1],dformat)
 #Date("2016-06-30",dformat)
-
 #dfd=sort(dfd,cols=[:date])
-
-
 #dfd[:chunks]=-1
 
 
@@ -240,13 +192,30 @@ end
 #---  Generate Lags ---
 
 
+export JULIA_NUM_THREADS=4
+Threads.nthreads()
 
+#addprocs([("10.106.128.212", 1)])
+addprocs([("10.106.128.213", 1)])
+addprocs([("10.106.128.214", 1)])
+addprocs([("10.106.128.215", 1)])
+addprocs([("10.106.128.216", 1)])
+addprocs([("10.106.128.217", 1)])
+addprocs([("10.106.128.218", 1)])
+addprocs([("10.106.128.219", 1)])
+addprocs([("10.106.128.220", 1)])
+addprocs([("10.106.128.221", 1)])
+addprocs(1)
 
+@everywhere insert!(Base.LOAD_CACHE_PATH, 1, "/mapr/mapr04p/analytics0001/analytic_users/jpkg/lib/v0.5")
+@everywhere pop!(Base.LOAD_CACHE_PATH)
+@everywhere println((Base.LOAD_CACHE_PATH))
 
+using DataFrames
+@everywhere using DataFrames
 p=1
 
-@everywhere function genLags(p::Int64)
-    root="/mapr/mapr04p/analytics0001/analytic_users/Models/RF/chunks"    
+@everywhere function genLags(p::Int64)  
     brks=[:html5
          ,:static
          ,:native_creative
@@ -267,10 +236,10 @@ p=1
           ,:rachaelraymag
           ,:shape
           ,:blank
-         ,:eatingwell
+          ,:eatingwell
           ,:meredithcorporation
           ,:realsimple
-         ,:turndsp
+          ,:turndsp
           ,:cookinglight
           ,:dataxu
           ,:allrecipes
@@ -281,6 +250,7 @@ p=1
          ,:youtube 
         ]
     
+    root="/mapr/mapr04p/analytics0001/analytic_users/Models/RF/chunks"  
     dfx = readtable(root*"/"*string(p)*".csv",header=true)
     
     for brk in brks
@@ -293,7 +263,135 @@ p=1
         end
     end
     writetable(root*"/"*string(p)*"_out.csv", dfx)
+    println("COMPLETE for : ",p,"  in ","/"*string(p)*"_out.csv")
 end
+
+"""
+@async remotecall_fetch(genLags, 2, 2)
+@spawnat 2 genLags(2)
+
+@async remotecall_fetch(genLags, 2, 2)
+@async remotecall_fetch(genLags, 3, 3)
+@async remotecall_fetch(genLags, 4, 4)
+@async remotecall_fetch(genLags, 5, 5)
+@async remotecall_fetch(genLags, 6, 6)
+@async remotecall_fetch(genLags, 7, 7)
+@async remotecall_fetch(genLags, 8, 8)
+@async remotecall_fetch(genLags, 9, 9)
+@async remotecall_fetch(genLags, 10, 10)
+@async remotecall_fetch(genLags, 11, 10)
+"""
+
+@async remotecall_fetch(genLags, 2, 11)
+@async remotecall_fetch(genLags, 3, 12)
+@async remotecall_fetch(genLags, 4, 13)
+@async remotecall_fetch(genLags, 5, 14)
+@async remotecall_fetch(genLags, 6, 15)
+@async remotecall_fetch(genLags, 7, 16)
+@async remotecall_fetch(genLags, 8, 17)
+@async remotecall_fetch(genLags, 9, 18)
+@async remotecall_fetch(genLags, 10, 19)
+@async remotecall_fetch(genLags, 11, 20)
+
+x=49
+for p in 2:11
+    x=x+1
+    @async remotecall_fetch(genLags, p,  x)
+end
+
+# Symbol in expression
+a=:xyz
+QuoteNode(a)
+:(5 - $t)
+:( :a in $( :(:a + :b) ) )
+
+s=:ssss
+:( :a in $( :(:($s) + $s) ) )
+
+
+a=:(:aaaa)
+b=:(:bbb)
+:( :a in $( :($a + $b) ) )
+
+
+function t(s::Symbol)
+           println(s," ~~ ",typeof(s))
+       end
+t(:xyz)
+:(t(:xyz))
+ex = :(t(:xyz))
+
+
+:(t(:xyz))
+
+v=:xyz
+:(t( :($v) ))
+
+
+ai=:aaa
+bi=:bbb
+a= QuoteNode(a)
+b= QuoteNode(b)
+:( :a in $( :($a + $b) ) )
+
+macro tst(v, exp)
+    println("v : ",v," ~~ ",typeof(v))
+    println("exp : ",exp," ~~ ",typeof(exp))
+    return exp
+end
+
+vi=:v1
+@tst vi :(println("hello"))
+
+#---------
+
+#----
+@everywhere function genx(p::Int64)
+        brks=[:html5
+         ,:static
+         ,:native_creative
+         ,:video
+         ,:content
+         ,:contextual
+         ,:direct
+         ,:prospecting
+          ,:retargeting
+          ,:behavorial
+          ,:native
+          ,:predictive
+          ,:thirdrdparty
+          ,:pmp
+          ,:buzzfeed
+          ,:hulu
+          ,:popsugarus
+          ,:rachaelraymag
+          ,:shape
+          ,:blank
+          ,:eatingwell
+          ,:meredithcorporation
+          ,:realsimple
+          ,:turndsp
+          ,:cookinglight
+          ,:dataxu
+          ,:allrecipes
+          ,:amazon
+          ,:myfitnesspal
+          ,:womenshealth
+          ,:yummly
+         ,:youtube 
+        ]
+    dfx = readtable("/mapr/mapr04p/analytics0001/analytic_users/Models/RF/chunks/"*string(p)*".csv",header=true)
+    println("xyz : ",p)
+end
+@spawnat 5  genx(64)
+
+
+p=1
+root="/mapr/mapr04p/analytics0001/analytic_users/Models/RF/chunks"   
+dfx = readtable(root*"/"*string(p)*".csv",header=true)
+y=:net_price
+#----
+
 
 
   brk=:youtube
