@@ -1,37 +1,4 @@
 #--------------------- MODEL ----------------------------------------
-"""
-function readFixedFile(dfx::DataFrame,mname::String)
-    println("LOADING DFX Fixed")
-    vout = dfx[(dfx[:modelType].=="GLM")&(dfx[:model].==mname),[:parameter,:coef,:stderr,:zval,:pval]]
-    names!(vout,[:x,:estimate, :std_error, :z_value,:pr_z_])
-    return vout
-end
-#readFixedFile(dfx,"occ")
-
-function readRandFile(dfx::DataFrame,mname::String)
-    println("LOADING DFX Rand")
-    vout = dfx[(dfx[:modelType].=="GLMM")&(dfx[:model].==mname),[:ranef,:parameter,:coef,:stderr,:zval,:pval]]
-    vout[:adj_coef] = 0.0
-    vout[:adj_stderr]=  0.0
-    vout[:row] = 0
-    vout[:levelse] = 0
-    vout[:exposed_orig]= 1
-    vout[:exposed] = true
-    vout[:key] = map( (c,l) ->  c*" ("*l*")"  , vout[:ranef],vout[:parameter] ) 
-    for row in eachrow(vout)
-        n=vout[(vout[:ranef].==row[:ranef])&(vout[:parameter].=="none"),:coef][1]
-        s=vout[(vout[:ranef].==row[:ranef])&(vout[:parameter].=="none"),:stderr][1]
-        println(row[:ranef]," ~~ ",n," ~~ ",s)
-        row[:adj_coef] = row[:coef]-n
-        row[:adj_stderr] = sqrt(row[:stderr]^2+s^2)
-        row[:coef] = 0
-    end
-    vout=vout[[  :ranef,:row,:parameter,:coef,:adj_coef,:levelse,:stderr,:adj_stderr,:exposed_orig,:exposed,:key ]]
-    names!(vout,[:class,:row,:level,    :B0  ,:B1      ,:levelse,:SE0   ,:SE1       ,:exposed_orig,:exposed,:key ])
-    return vout[vout[:level].!="none",:]
-end
-#readRandFile(dfx,"occ")
-"""
 
 function readFixedFile(fname::AbstractString)
     if isfile(fname)
@@ -160,12 +127,12 @@ type MOcc <: MModel
     fmula::AbstractString
     modelName::AbstractString
     logvar::AbstractString
-    function MOcc(df_data::DataFrame,cfg::OrderedDict) this=new(); this.modelName="occ"; this.logvar="trps_pre_p1"; #this.sdf=pushSDFrow!(deepcopy(SDF),"Total Campaign",this.v_model);
+    function MOcc(df_data::DataFrame,cfg::OrderedDict) this=new(); this.modelName="occ"; if   cfg[:offset]  this.logvar="trps_pre_p1"; end#this.sdf=pushSDFrow!(deepcopy(SDF),"Total Campaign",this.v_model);
         this.fList=Symbol[]; this.rList=Symbol[]; this.dList=Symbol[]
         #this.hasBreaks=false
         this.fmula=""
         idf=readFixedFile("Occasion/Occ_fixed_effects.csv")
-        this.feff=FOcc(df_data, idf)
+        this.feff=FOcc(df_data, idf,cfg)
         idf=readRandFile("Occasion/Occ_random_effects.csv",cfg)
         this.reff=ROcc(df_data, idf)
         this.hasBreaks = length(idf[1])==0 ? false : true
@@ -189,11 +156,11 @@ type MDolOcc <: MModel
     fmula::AbstractString
     modelName::AbstractString
     logvar::AbstractString
-    function MDolOcc(df_data::DataFrame,cfg::OrderedDict) this=new(); this.modelName="dolocc"; this.logvar="dol_per_trip_pre_p1"; #this.sdf=pushSDFrow!(deepcopy(SDF),"Total Campaign",this.v_model);
+    function MDolOcc(df_data::DataFrame,cfg::OrderedDict) this=new(); this.modelName="dolocc"; if  ( cfg[:offset])  this.logvar="dol_per_trip_pre_p1"; end #this.sdf=pushSDFrow!(deepcopy(SDF),"Total Campaign",this.v_model);
         this.fList=Symbol[]; this.rList=Symbol[]; this.dList=Symbol[]
         this.fmula=""
         idf=readFixedFile("DollarsOccasion/DolOcc_fixed_effects.csv")
-        this.feff=FDolOcc(df_data, idf)
+        this.feff=FDolOcc(df_data, idf, cfg)
         idf=readRandFile("DollarsOccasion/DolOcc_random_effects.csv",cfg)
         this.reff=RDolOcc(df_data, idf)
         this.hasBreaks = length(idf[1])==0 ? false : true
@@ -215,11 +182,11 @@ type MPen <: MModel
     fmula::AbstractString
     modelName::AbstractString
     logvar::AbstractString
-    function MPen(df_data::DataFrame,cfg::OrderedDict) this=new(); this.modelName="pen"; this.logvar="buyer_pre_p1"; #this.sdf=pushSDFrow!(deepcopy(SDF),"Total Campaign",this.v_model);
+    function MPen(df_data::DataFrame,cfg::OrderedDict) this=new(); this.modelName="pen";if  ( cfg[:offset])  this.logvar="buyer_pre_p1"; end#this.sdf=pushSDFrow!(deepcopy(SDF),"Total Campaign",this.v_model);
         this.fList=Symbol[]; this.rList=Symbol[]; this.dList=Symbol[]
         this.fmula=""
         idf=readFixedFile("Penetration/Pen_fixed_effects.csv")
-        this.feff=FPen(df_data, idf)
+        this.feff=FPen(df_data, idf,cfg)
         idf=readRandFile("Penetration/Pen_random_effects.csv",cfg)
         this.reff=RPen(df_data, idf)
         this.hasBreaks = length(idf[1])==0 ? false : true
